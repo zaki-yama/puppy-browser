@@ -38,6 +38,31 @@ where
     })
 }
 
+fn open_tag<Input>() -> impl Parser<Input, Output = (String, AttrMap)>
+where
+    Input: Stream<Token = char>,
+    Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
+{
+    let open_tag_name = many1::<String, _, _>(letter());
+    let open_tag_content = (
+        open_tag_name,
+        many::<String, _, _>(space().or(newline())),
+        attributes(),
+    )
+        .map(|v: (String, _, AttrMap)| (v.0, v.2));
+    between(char('<'), char('>'), open_tag_content)
+}
+
+fn close_tag<Input>() -> impl Parser<Input, Output = String>
+where
+    Input: Stream<Token = char>,
+    Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
+{
+    let close_tag_name = many1::<String, _, _>(letter());
+    let close_tag_content = (char('/'), close_tag_name).map(|v| v.1);
+    between(char('<'), char('>'), close_tag_content)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::dom::Text;
@@ -70,5 +95,22 @@ mod tests {
         );
 
         assert_eq!(attributes().parse(""), Ok((AttrMap::new(), "")))
+    }
+
+    #[test]
+    fn test_parse_open_tag() {
+        {
+            assert_eq!(
+                open_tag().parse("<p>aaaa"),
+                Ok((("p".to_string(), AttrMap::new()), "aaaa"))
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_close_tag() {
+        {
+            assert_eq!(close_tag().parse("</p>"), Ok((("p".to_string(), ""))));
+        }
     }
 }
