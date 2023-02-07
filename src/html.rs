@@ -1,7 +1,7 @@
-use crate::dom::{AttrMap, Element, Node};
-use combine::error::ParseError;
+use crate::dom::{AttrMap, Element, Node, Text};
+use combine::error::{ParseError, StreamError};
 use combine::parser::char::{char, letter, newline, space};
-use combine::{between, many, many1, satisfy, sep_by, Parser, Stream};
+use combine::{attempt, between, choice, many, many1, parser, satisfy, sep_by, Parser, Stream};
 
 fn attribute<Input>() -> impl Parser<Input, Output = (String, String)>
 where
@@ -38,6 +38,7 @@ where
     })
 }
 
+/// `open_tag` consumes `<tag_name attr_name="attr_value" ...>`
 fn open_tag<Input>() -> impl Parser<Input, Output = (String, AttrMap)>
 where
     Input: Stream<Token = char>,
@@ -53,6 +54,7 @@ where
     between(char('<'), char('>'), open_tag_content)
 }
 
+/// `close_tag` consumes `</tag_name>`
 fn close_tag<Input>() -> impl Parser<Input, Output = String>
 where
     Input: Stream<Token = char>,
@@ -61,6 +63,52 @@ where
     let close_tag_name = many1::<String, _, _>(letter());
     let close_tag_content = (char('/'), close_tag_name).map(|v| v.1);
     between(char('<'), char('>'), close_tag_content)
+}
+
+fn nodes_<Input>() -> impl Parser<Input, Output = Vec<Box<Node>>>
+where
+    Input: Stream<Token = char>,
+    Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
+{
+    attempt(many(choice((attempt(element()), attempt(text())))))
+}
+
+parser! {
+    fn nodes[Input]()(Input) -> Vec<Box<Node>>
+    where [Input: Stream<Token = char>]
+    {
+        nodes_()
+    }
+}
+
+fn text<Input>() -> impl Parser<Input, Output = Box<Node>>
+where
+    Input: Stream<Token = char>,
+    Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
+{
+    many1(satisfy(|c: char| c != '<')).map(|t| Text::new(t))
+}
+
+fn element<Input>() -> impl Parser<Input, Output = Box<Node>>
+where
+    Input: Stream<Token = char>,
+    Input::Error: ParseError<Input::Token, Input::Range, Input::Position>,
+{
+    (open_tag(), nodes(), close_tag()).and_then(
+        |((open_tag_name, attributes), children, close_tag_name)| {
+            if open_tag_name == close_tag_name {
+                Ok(Element::new(open_tag_name, attributes, children))
+            } else {
+                Err(<Input::Error as combine::error::ParseError<
+                    char,
+                    Input::Range,
+                    Input::Position,
+                >>::StreamError::message_static_message(
+                    "tag name of open tag and close tag mismatched",
+                ))
+            }
+        },
+    )
 }
 
 #[cfg(test)]
@@ -110,7 +158,43 @@ mod tests {
     #[test]
     fn test_parse_close_tag() {
         {
-            assert_eq!(close_tag().parse("</p>"), Ok((("p".to_string(), ""))));
+            assert_eq!(close_tag().parse("</p>"), Ok(("p".to_string(), "")));
         }
+    }
+
+    #[test]
+    fn test_parse_element() {
+        assert_eq!(
+            element().parse("<p></p>"),
+            Ok((Element::new("p".to_string(), AttrMap::new(), vec![]), ""))
+        );
+
+        assert_eq!(
+            element().parse("<p>hello world</p>"),
+            Ok((
+                Element::new(
+                    "p".to_string(),
+                    AttrMap::new(),
+                    vec![Text::new("hello world".to_string())]
+                ),
+                ""
+            ))
+        );
+
+        assert_eq!(
+            element().parse("<div><p>hello world</p></div>"),
+            Ok((
+                Element::new(
+                    "div".to_string(),
+                    AttrMap::new(),
+                    vec![Element::new(
+                        "p".to_string(),
+                        AttrMap::new(),
+                        vec![Text::new("hello world".to_string())]
+                    )],
+                ),
+                ""
+            ))
+        );
     }
 }
